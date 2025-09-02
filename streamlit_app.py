@@ -133,18 +133,21 @@ def extract_trend_strength_from_text(text, report_date=None):
                     not variety.isdigit() and
                     re.match(r'^[\u4e00-\u9fa5A-Za-z0-9（）()]+$', variety)):
                     try:
-                        strength_value = float(strength)
+                        # 先转换为浮点数进行范围验证，但保存原始字符串
+                        strength_float = float(strength)
                         # 确保趋势强度在合理范围内
-                        if -10 <= strength_value <= 10:
-                            key = (variety, strength_value)
+                        if -10 <= strength_float <= 10:
+                            # 使用原始字符串作为趋势值
+                            key = (variety, strength)
                             if key not in found_data:
                                 found_data.add(key)
                                 trend_data.append({
                                     '品种': variety,
-                                    '趋势强度': strength_value,
+                                    '趋势强度': strength,  # 保存原始字符串
+                                    '趋势强度_float': strength_float,  # 保存浮点数用于计算
                                     '日期': report_date
                                 })
-                                st.success(f"提取: {variety} = {strength_value}")
+                                st.success(f"提取: {variety} = {strength}")
                     except ValueError:
                         st.warning(f"跳过无效数值: {variety} = {strength}")
                         continue
@@ -221,14 +224,19 @@ def extract_trend_strength_from_text(text, report_date=None):
                     
                     for i, (variety, number) in enumerate(unique_varieties, 1):
                         try:
-                            trend_data.append({
-                                '品种': variety.strip(),
-                                '趋势强度': float(number),
-                                '序号': i,
-                                '类别': category,
-                                '日期': report_date
-                            })
-                            st.success(f"提取: {variety.strip()} = {number}")
+                            # 先转换为浮点数进行验证，但保存原始字符串
+                            number_float = float(number)
+                            # 确保趋势强度在合理范围内
+                            if -10 <= number_float <= 10:
+                                trend_data.append({
+                                    '品种': variety.strip(),
+                                    '趋势强度': number,  # 保存原始字符串
+                                    '趋势强度_float': number_float,  # 保存浮点数用于计算
+                                    '序号': i,
+                                    '类别': category,
+                                    '日期': report_date
+                                })
+                                st.success(f"提取: {variety.strip()} = {number}")
                         except ValueError:
                             st.warning(f"跳过无效数值: {variety} = {number}")
                             continue
@@ -290,46 +298,89 @@ def save_trend_strength_pivot_csv(all_trend_data, output_dir=None, incremental=T
     # 更新session_state中的历史数据
     st.session_state.historical_data = combined_df.to_dict('records')
     
-    # 创建透视表
-    pivot_df = combined_df.pivot_table(
-        index='日期', 
-        columns='品种', 
-        values='趋势强度', 
-        fill_value=0.0
-    )
+    # 保存到CSV文件以实现持久化
+    try:
+        data_dir = Path("./data")
+        data_dir.mkdir(exist_ok=True)
+        csv_file_path = data_dir / "trend_strength_data.csv"
+        combined_df.to_csv(csv_file_path, index=False)
+        st.success(f"已将 {len(combined_df)} 条数据保存到CSV文件")
+    except Exception as e:
+        st.error(f"保存CSV文件时出错: {str(e)}")
+    
+    # 创建透视表 - 使用浮点数字段进行计算
+    if '趋势强度_float' in combined_df.columns:
+        # 使用浮点数字段创建计算用的透视表
+        pivot_calc_df = combined_df.pivot_table(
+            index='日期', 
+            columns='品种', 
+            values='趋势强度_float', 
+            fill_value=0.0
+        )
+        
+        # 使用原始字符串创建显示用的透视表
+        pivot_df = combined_df.pivot_table(
+            index='日期', 
+            columns='品种', 
+            values='趋势强度', 
+            aggfunc='first',  # 使用第一个值，因为字符串不能求平均
+            fill_value='0'
+        )
+    else:
+        # 向后兼容，如果没有浮点数字段，则使用原始字段
+        pivot_df = combined_df.pivot_table(
+            index='日期', 
+            columns='品种', 
+            values='趋势强度', 
+            fill_value='0'
+        )
     
     # 按日期排序
     pivot_df = pivot_df.sort_index()
     
     # 检测趋势强度变化并创建变化标记表
-    change_df = pivot_df.astype(str).copy()
+    change_df = pivot_df.copy()
+    
+    # 使用计算用的透视表进行比较（如果存在）
+    compare_df = pivot_calc_df if '趋势强度_float' in combined_df.columns else pivot_df
     
     for col in pivot_df.columns:
         for i in range(len(pivot_df)):
-            current_value = pivot_df.iloc[i][col]
+            current_value = pivot_df.iloc[i][col]  # 显示用的原始字符串值
             
             if i == 0:
-                # 第一行直接显示所有数值（包括0）
-                change_df.iloc[i, change_df.columns.get_loc(col)] = str(current_value)
+                # 第一行直接显示所有数值
+                change_df.iloc[i, change_df.columns.get_loc(col)] = current_value
             else:
-                previous_value = pivot_df.iloc[i-1][col]
+                # 使用计算用的值进行比较
+                current_compare = compare_df.iloc[i][col]
+                previous_compare = compare_df.iloc[i-1][col]
                 
                 # 如果趋势强度发生变化，用★标记
-                if current_value != previous_value:
+                if current_compare != previous_compare:
                     change_df.iloc[i, change_df.columns.get_loc(col)] = f'★{current_value}'
                 else:
                     # 没有变化，正常显示数值
-                    change_df.iloc[i, change_df.columns.get_loc(col)] = str(current_value)
+                    change_df.iloc[i, change_df.columns.get_loc(col)] = current_value
     
     # 统计变化情况
     total_changes = 0
-    for col in pivot_df.columns:
-        for i in range(1, len(pivot_df)):
-            current_value = pivot_df.iloc[i][col]
-            previous_value = pivot_df.iloc[i-1][col]
-            if (current_value != previous_value and 
-                current_value != 0 and previous_value != 0):
-                total_changes += 1
+    # 使用计算用的透视表进行比较（如果存在）
+    stats_df = pivot_calc_df if '趋势强度_float' in combined_df.columns else pivot_df
+    
+    for col in stats_df.columns:
+        for i in range(1, len(stats_df)):
+            current_value = stats_df.iloc[i][col]
+            previous_value = stats_df.iloc[i-1][col]
+            # 对于浮点数比较，使用不等于；对于字符串，需要先确保不是'0'再比较
+            if isinstance(current_value, (int, float)):
+                if (current_value != previous_value and 
+                    current_value != 0 and previous_value != 0):
+                    total_changes += 1
+            else:  # 字符串情况
+                if (current_value != previous_value and 
+                    current_value != '0' and previous_value != '0'):
+                    total_changes += 1
     
     st.info(f"数据维度: {pivot_df.shape[0]} 个日期, {pivot_df.shape[1]} 个品种")
     st.info(f"检测到 {total_changes} 次趋势强度变化（用★标记）")
@@ -363,6 +414,7 @@ def create_download_files(trend_data):
     if '文件名' in sample_item:
         optional_fields.append('文件名')
     
+    # 排除趋势强度_float字段，这个字段只用于内部计算
     all_fields = base_fields + optional_fields
     
     # 按品种分组的CSV
@@ -370,7 +422,14 @@ def create_download_files(trend_data):
     writer = csv.DictWriter(by_variety_csv, fieldnames=all_fields)
     writer.writeheader()
     sorted_data = sorted(trend_data, key=lambda x: x['品种'])
-    writer.writerows(sorted_data)
+    
+    # 过滤掉趋势强度_float字段
+    filtered_data = []
+    for item in sorted_data:
+        filtered_item = {k: v for k, v in item.items() if k != '趋势强度_float'}
+        filtered_data.append(filtered_item)
+    
+    writer.writerows(filtered_data)
     files['trend_strength_by_variety.csv'] = by_variety_csv.getvalue()
     
     # 按日期排序的CSV
@@ -379,7 +438,14 @@ def create_download_files(trend_data):
     writer = csv.DictWriter(by_date_csv, fieldnames=date_fields)
     writer.writeheader()
     sorted_data = sorted(trend_data, key=lambda x: x['日期'])
-    writer.writerows(sorted_data)
+    
+    # 过滤掉趋势强度_float字段
+    filtered_data = []
+    for item in sorted_data:
+        filtered_item = {k: v for k, v in item.items() if k != '趋势强度_float'}
+        filtered_data.append(filtered_item)
+    
+    writer.writerows(filtered_data)
     files['trend_strength_by_date.csv'] = by_date_csv.getvalue()
     
     # 按文件名分组的CSV（如果有文件名信息）
@@ -389,11 +455,24 @@ def create_download_files(trend_data):
         writer = csv.DictWriter(by_file_csv, fieldnames=file_fields)
         writer.writeheader()
         sorted_data = sorted(trend_data, key=lambda x: (x.get('文件名', ''), x['品种']))
-        writer.writerows(sorted_data)
+        
+        # 过滤掉趋势强度_float字段
+        filtered_data = []
+        for item in sorted_data:
+            filtered_item = {k: v for k, v in item.items() if k != '趋势强度_float'}
+            filtered_data.append(filtered_item)
+        
+        writer.writerows(filtered_data)
         files['trend_strength_by_file.csv'] = by_file_csv.getvalue()
     
     # Excel格式
-    df = pd.DataFrame(trend_data)
+    # 过滤掉趋势强度_float字段
+    filtered_data = []
+    for item in trend_data:
+        filtered_item = {k: v for k, v in item.items() if k != '趋势强度_float'}
+        filtered_data.append(filtered_item)
+    
+    df = pd.DataFrame(filtered_data)
     excel_buffer = io.BytesIO()
     df.to_excel(excel_buffer, index=False)
     files['trend_strength_summary.xlsx'] = excel_buffer.getvalue()
@@ -503,9 +582,26 @@ def main():
     st.title("📊 PDF趋势强度提取工具")
     st.markdown("---")
     
+    # 创建数据目录（如果不存在）
+    data_dir = Path("./data")
+    data_dir.mkdir(exist_ok=True)
+    
+    # CSV文件路径
+    csv_file_path = data_dir / "trend_strength_data.csv"
+    
     # 初始化session state
     if 'historical_data' not in st.session_state:
-        st.session_state.historical_data = []
+        # 尝试从CSV文件加载历史数据
+        if csv_file_path.exists():
+            try:
+                df = pd.read_csv(csv_file_path)
+                st.session_state.historical_data = df.to_dict('records')
+                st.success(f"已从CSV文件加载 {len(df)} 条历史数据")
+            except Exception as e:
+                st.error(f"加载CSV文件时出错: {str(e)}")
+                st.session_state.historical_data = []
+        else:
+            st.session_state.historical_data = []
     
     # 显示历史数据统计
     if st.session_state.historical_data:
@@ -514,10 +610,34 @@ def main():
         unique_varieties = historical_df['品种'].nunique()
         st.info(f"📈 历史数据: {len(st.session_state.historical_data)} 条记录，{unique_dates} 个日期，{unique_varieties} 个品种")
         
+        # 生成透视表（使用历史数据）
+        st.subheader("📊 历史数据变化分析")
+        pivot_df, change_df = save_trend_strength_pivot_csv(st.session_state.historical_data, incremental=False)
+        
+        if pivot_df is not None:
+            # 只显示变化标记表
+            st.write("**变化标记表（★表示变化）:**")
+            # 确保所有列都是字符串类型，避免Arrow转换错误
+            change_df_str = change_df.astype(str)
+            st.dataframe(change_df_str, use_container_width=True)
+        
         # 清除历史数据按钮
         if st.button("🗑️ 清除历史数据", help="清除所有已保存的历史数据"):
             st.session_state.historical_data = []
-            st.success("历史数据已清除")
+            
+            # 同时删除CSV文件
+            try:
+                data_dir = Path("./data")
+                csv_file_path = data_dir / "trend_strength_data.csv"
+                if csv_file_path.exists():
+                    csv_file_path.unlink()  # 删除文件
+                    st.success("历史数据已清除，CSV文件已删除")
+                else:
+                    st.success("历史数据已清除")
+            except Exception as e:
+                st.error(f"删除CSV文件时出错: {str(e)}")
+                st.success("历史数据已清除，但CSV文件删除失败")
+            
             st.experimental_rerun()
     
     st.markdown("""
@@ -556,8 +676,6 @@ def main():
                 
                 # 处理每个上传的文件
                 for i, uploaded_file in enumerate(uploaded_files, 1):
-                    st.info(f"正在处理第 {i}/{len(uploaded_files)} 个文件: {uploaded_file.name}")
-                    
                     # 分析PDF
                     trend_data, stats = analyze_pdf_trend_strength(uploaded_file, uploaded_file.name)
                     
@@ -567,26 +685,23 @@ def main():
                         # 合并统计信息
                         for category, count in stats.items():
                             all_stats[category] = all_stats.get(category, 0) + count
-                        
-                        st.success(f"✅ {uploaded_file.name}: 提取到 {len(trend_data)} 条数据")
                     else:
                         st.warning(f"⚠️ {uploaded_file.name}: 未能提取到数据")
                 
                 # 显示汇总结果
                 if all_trend_data:
-                    st.success(f"🎉 批量分析完成！共从 {len(uploaded_files)} 个文件中提取到 {len(all_trend_data)} 条趋势强度信息")
+                    st.success(f"✅ 分析完成：{len(all_trend_data)} 条趋势强度信息")
                     
                     # 使用合并后的数据进行后续处理
                     trend_data = all_trend_data
                     stats = all_stats
                 else:
-                    st.error("所有文件都未能提取到趋势强度信息")
+                    st.error("未能提取到趋势强度信息")
                     st.stop()
                 
                 if trend_data:
-                    # 显示文件处理统计
+                    # 显示简化的统计信息
                     successful_files = sum(1 for file in uploaded_files if any(item.get('文件名', '').startswith(file.name.split('.')[0]) for item in trend_data))
-                    st.success(f"分析完成！成功处理 {successful_files}/{len(uploaded_files)} 个文件，共提取到 {len(trend_data)} 个品种的趋势强度信息")
                     
                     # 显示统计信息
                     col1, col2, col3 = st.columns(3)
@@ -624,7 +739,9 @@ def main():
                         
                         # 显示变化标记表
                         st.write("**变化标记表（★表示变化）:**")
-                        st.dataframe(change_df, use_container_width=True)
+                        # 确保所有列都是字符串类型，避免Arrow转换错误
+                        change_df_str = change_df.astype(str)
+                        st.dataframe(change_df_str, use_container_width=True)
                     
                     # 生成下载文件
                     files = create_download_files(trend_data)
