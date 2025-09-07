@@ -400,7 +400,9 @@ def main():
         pivot_df = save_trend_strength_pivot_csv(st.session_state.historical_data, incremental=False)
         
         if pivot_df is not None:
-            st.write("**历史数据透视表:**")
+            # 仅展示最新10个日期
+            pivot_df = pivot_df.head(10)
+            st.write("**历史数据透视表（最新10个日期）:**")
             # 构造变化标记：与上一日比较，变动用箭头标记
             pivot_str = pivot_df.astype(str)
             # 数值化用于比较，'--' 转为空
@@ -415,25 +417,34 @@ def main():
 
             pivot_with_marks = pivot_str + marker
             st.dataframe(pivot_with_marks, width='stretch')
-        
-        # 清除历史数据按钮
-        if st.button("🗑️ 清除历史数据", help="清除所有已保存的历史数据"):
-            st.session_state.historical_data = []
-            
-            # 同时删除CSV文件
+
+        # 删除指定日期的数据
+        with st.expander("删除指定日期的数据", expanded=False):
             try:
-                data_dir = Path("./data")
-                csv_file_path = data_dir / "trend_strength_data.csv"
-                if csv_file_path.exists():
-                    csv_file_path.unlink()  # 删除文件
-                    st.success("历史数据已清除，CSV文件已删除")
-                else:
-                    st.success("历史数据已清除")
-            except Exception as e:
-                st.error(f"删除CSV文件时出错: {str(e)}")
-                st.success("历史数据已清除，但CSV文件删除失败")
-            
-            st.rerun()
+                available_dates = sorted(historical_df['日期'].unique().tolist(), reverse=True)
+            except Exception:
+                available_dates = []
+            if available_dates:
+                selected_date = st.selectbox("选择要删除的日期", options=available_dates, index=0)
+                if st.button("🗑️ 删除所选日期数据", help="将从历史记录与CSV中移除该日期的所有数据"):
+                    remaining = [item for item in st.session_state.historical_data if item.get('日期') != selected_date]
+                    removed_count = len(st.session_state.historical_data) - len(remaining)
+                    st.session_state.historical_data = remaining
+                    # 同步更新CSV文件
+                    try:
+                        if remaining:
+                            pd.DataFrame(remaining).to_csv(csv_file_path, index=False, encoding='utf-8-sig')
+                        else:
+                            if csv_file_path.exists():
+                                csv_file_path.unlink()
+                        st.success(f"已删除 {selected_date} 的 {removed_count} 条记录")
+                    except Exception as e:
+                        st.error(f"更新CSV文件时出错: {str(e)}")
+                    st.rerun()
+            else:
+                st.info("当前无可删除的日期")
+        
+        # 按需移除清除历史数据功能（已取消）
     
 
     
