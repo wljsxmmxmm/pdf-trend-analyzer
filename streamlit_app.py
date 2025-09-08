@@ -193,7 +193,7 @@ def save_trend_strength_pivot_csv(all_trend_data, output_dir=None, incremental=T
     
     # 如果启用增量更新且存在历史数据，则合并
     if incremental and 'historical_data' in st.session_state and st.session_state.historical_data:
-        st.info("检测到历史数据，正在进行增量更新...")
+        # 静默增量更新，避免页面顶部出现提示
         historical_df = pd.DataFrame(st.session_state.historical_data)
         
         # 合并历史数据和新数据
@@ -202,10 +202,10 @@ def save_trend_strength_pivot_csv(all_trend_data, output_dir=None, incremental=T
         # 去重：同一日期同一品种只保留最新的记录
         combined_df = combined_df.drop_duplicates(subset=['日期', '品种'], keep='last')
         
-        st.info(f"合并后数据量: {len(combined_df)} 条记录")
+        # 合并后数据量日志省略
     else:
         combined_df = new_df
-        st.info(f"使用新数据: {len(combined_df)} 条记录")
+        # 使用新数据日志省略
     
     # 更新session_state中的历史数据
     st.session_state.historical_data = combined_df.to_dict('records')
@@ -216,7 +216,7 @@ def save_trend_strength_pivot_csv(all_trend_data, output_dir=None, incremental=T
         data_dir.mkdir(exist_ok=True)
         csv_file_path = data_dir / "trend_strength_data.csv"
         combined_df.to_csv(csv_file_path, index=False, encoding='utf-8-sig')
-        st.success(f"已将 {len(combined_df)} 条数据保存到CSV文件")
+        # 保存CSV的提示省略
     except Exception as e:
         st.error(f"保存CSV文件时出错: {str(e)}")
     
@@ -272,9 +272,49 @@ def save_trend_strength_pivot_csv(all_trend_data, output_dir=None, incremental=T
         if set(ordered_cols) == set(pivot_df.columns):
             pivot_df = pivot_df[ordered_cols]
     
-    st.info(f"数据维度: {pivot_df.shape[0]} 个日期, {pivot_df.shape[1]} 个品种")
+    # 维度信息提示省略
     
     return pivot_df
+
+
+# 样式辅助：仅为“最新日期”一行添加颜色（正数红，负数绿）
+def style_latest_date_row(df: pd.DataFrame) -> pd.DataFrame:
+    """返回与df同形状的样式DataFrame，仅为第一行（最新日期）着色。
+    - 正数：红色
+    - 负数：绿色
+    其余单元格不着色。
+    支持单元格中带有↑/↓箭头或非数字占位符（如--）。
+    """
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    if df.empty:
+        return styles
+
+    latest_idx = df.index[0]
+
+    def parse_number(val: str):
+        if val is None:
+            return None
+        try:
+            s = str(val)
+            # 去掉箭头和空格
+            s = s.replace('↑', '').replace('↓', '').strip()
+            if s in ('', '--'):
+                return None
+            return float(s)
+        except Exception:
+            return None
+
+    for col in df.columns:
+        num = parse_number(df.loc[latest_idx, col])
+        if num is None:
+            continue
+        if num > 0:
+            styles.loc[latest_idx, col] = 'color: red'
+        elif num < 0:
+            styles.loc[latest_idx, col] = 'color: green'
+        # 等于0不着色
+
+    return styles
 
 
 
@@ -353,8 +393,7 @@ def main():
         layout="wide"
     )
     
-    st.title("📊 PDF趋势强度提取工具")
-    st.markdown("---")
+    # 取消页面主标题展示
     
     # 创建数据目录（如果不存在）
     data_dir = Path("./data")
@@ -377,78 +416,14 @@ def main():
                     st.info("已清理历史数据中的趋势强度_float字段")
                 
                 st.session_state.historical_data = df.to_dict('records')
-                st.success(f"已从CSV文件加载 {len(df)} 条历史数据")
+                # 取消CSV加载成功提示
             except Exception as e:
                 st.error(f"加载CSV文件时出错: {str(e)}")
                 st.session_state.historical_data = []
         else:
             st.session_state.historical_data = []
     
-    # 显示历史数据统计
-    if st.session_state.historical_data:
-        historical_df = pd.DataFrame(st.session_state.historical_data)
-        unique_dates = historical_df['日期'].nunique()
-        unique_varieties = historical_df['品种'].nunique()
-        
-        # 获取最新日期
-        latest_date = historical_df['日期'].max()
-        st.info(f"📈 历史数据: {len(st.session_state.historical_data)} 条记录，{unique_dates} 个日期，{unique_varieties} 个品种")
-        st.info(f"📅 最新数据日期: {latest_date}")
-        
-        # 生成透视表（使用历史数据）
-        st.subheader("📊 历史数据分析")
-        pivot_df = save_trend_strength_pivot_csv(st.session_state.historical_data, incremental=False)
-        
-        if pivot_df is not None:
-            # 仅展示最新10个日期
-            pivot_df = pivot_df.head(10)
-            st.write("**历史数据透视表（最新10个日期）:**")
-            # 构造变化标记：与上一日比较，变动用箭头标记
-            pivot_str = pivot_df.astype(str)
-            # 数值化用于比较，'--' 转为空
-            pivot_num = pivot_str.replace('--', pd.NA).apply(pd.to_numeric, errors='coerce')
-            prev_num = pivot_num.shift(-1)  # 上一日（因日期从新到旧排序）
-
-            up_mask = pivot_num.notna() & prev_num.notna() & (pivot_num > prev_num)
-            down_mask = pivot_num.notna() & prev_num.notna() & (pivot_num < prev_num)
-            marker = pd.DataFrame('', index=pivot_str.index, columns=pivot_str.columns)
-            # 仅标注上升/下降，不对缺失变化标记
-            marker = marker.mask(up_mask, '↑').mask(down_mask, '↓')
-
-            pivot_with_marks = pivot_str + marker
-            st.dataframe(pivot_with_marks, width='stretch')
-
-        # 删除指定日期的数据
-        with st.expander("删除指定日期的数据", expanded=False):
-            try:
-                available_dates = sorted(historical_df['日期'].unique().tolist(), reverse=True)
-            except Exception:
-                available_dates = []
-            if available_dates:
-                selected_date = st.selectbox("选择要删除的日期", options=available_dates, index=0)
-                if st.button("🗑️ 删除所选日期数据", help="将从历史记录与CSV中移除该日期的所有数据"):
-                    remaining = [item for item in st.session_state.historical_data if item.get('日期') != selected_date]
-                    removed_count = len(st.session_state.historical_data) - len(remaining)
-                    st.session_state.historical_data = remaining
-                    # 同步更新CSV文件
-                    try:
-                        if remaining:
-                            pd.DataFrame(remaining).to_csv(csv_file_path, index=False, encoding='utf-8-sig')
-                        else:
-                            if csv_file_path.exists():
-                                csv_file_path.unlink()
-                        st.success(f"已删除 {selected_date} 的 {removed_count} 条记录")
-                    except Exception as e:
-                        st.error(f"更新CSV文件时出错: {str(e)}")
-                    st.rerun()
-            else:
-                st.info("当前无可删除的日期")
-        
-        # 按需移除清除历史数据功能（已取消）
-    
-
-    
-    # 文件上传
+    # 将文件上传功能放在最上方
     uploaded_files = st.file_uploader(
         "选择PDF文件",
         type=['pdf'],
@@ -517,12 +492,84 @@ def main():
                     
                     if pivot_df is not None:
                         st.write("**趋势强度透视表:**")
-                        st.dataframe(pivot_df, width='stretch')
+                        # 为最新日期一行加色：正数红、负数绿
+                        styled = pivot_df.astype(str).style.apply(style_latest_date_row, axis=None)
+                        st.dataframe(styled, width='stretch')
                     
                     
                 else:
                     st.warning("未找到趋势强度信息")
                     st.info("请确保PDF文件包含【趋势强度】部分的内容")
+
+    # 显示历史数据统计
+    if st.session_state.historical_data:
+        historical_df = pd.DataFrame(st.session_state.historical_data)
+        unique_dates = historical_df['日期'].nunique()
+        unique_varieties = historical_df['品种'].nunique()
+        
+        # 获取最新日期
+        latest_date = historical_df['日期'].max()
+        # 取消页面上方的统计提示
+        
+        # 生成透视表（使用历史数据）
+        # st.subheader("📊 历史数据分析")
+        pivot_df = save_trend_strength_pivot_csv(st.session_state.historical_data, incremental=False)
+        
+        if pivot_df is not None:
+            # 是否显示完整历史数据
+            show_full = st.checkbox("显示完整历史数据表格", value=False)
+            if not show_full:
+                pivot_df = pivot_df.head(10)
+            title_txt = "历史数据透视表（完整）" if show_full else "历史数据透视表（最新10个日期）"
+            st.write(f"**{title_txt}:**")
+            # 构造变化标记：与上一日比较，变动用箭头标记
+            pivot_str = pivot_df.astype(str)
+            # 数值化用于比较，'--' 转为空
+            pivot_num = pivot_str.replace('--', pd.NA).apply(pd.to_numeric, errors='coerce')
+            prev_num = pivot_num.shift(-1)  # 上一日（因日期从新到旧排序）
+
+            up_mask = pivot_num.notna() & prev_num.notna() & (pivot_num > prev_num)
+            down_mask = pivot_num.notna() & prev_num.notna() & (pivot_num < prev_num)
+            marker = pd.DataFrame('', index=pivot_str.index, columns=pivot_str.columns)
+            # 仅标注上升/下降，不对缺失变化标记
+            marker = marker.mask(up_mask, '↑').mask(down_mask, '↓')
+
+            pivot_with_marks = pivot_str + marker
+            # 为最新日期一行加色：正数红、负数绿
+            styled = (pivot_with_marks
+                      .style
+                      .apply(style_latest_date_row, axis=None))
+            st.dataframe(styled, width='stretch')
+
+        # 删除指定日期的数据
+        with st.expander("删除指定日期的数据", expanded=False):
+            try:
+                available_dates = sorted(historical_df['日期'].unique().tolist(), reverse=True)
+            except Exception:
+                available_dates = []
+            if available_dates:
+                selected_date = st.selectbox("选择要删除的日期", options=available_dates, index=0)
+                if st.button("🗑️ 删除所选日期数据", help="将从历史记录与CSV中移除该日期的所有数据"):
+                    remaining = [item for item in st.session_state.historical_data if item.get('日期') != selected_date]
+                    removed_count = len(st.session_state.historical_data) - len(remaining)
+                    st.session_state.historical_data = remaining
+                    # 同步更新CSV文件
+                    try:
+                        if remaining:
+                            pd.DataFrame(remaining).to_csv(csv_file_path, index=False, encoding='utf-8-sig')
+                        else:
+                            if csv_file_path.exists():
+                                csv_file_path.unlink()
+                        st.success(f"已删除 {selected_date} 的 {removed_count} 条记录")
+                    except Exception as e:
+                        st.error(f"更新CSV文件时出错: {str(e)}")
+                    st.rerun()
+            else:
+                st.info("当前无可删除的日期")
+        
+        # 按需移除清除历史数据功能（已取消）
+    
+    
     
 
 
