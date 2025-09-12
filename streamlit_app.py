@@ -248,6 +248,7 @@ def save_trend_strength_pivot_csv(all_trend_data, output_dir=None, incremental=T
     
     # 列排序优化：按最新日期分组排序
     # 从左到右顺序：趋势>0，趋势<0，趋势=0，未提取到（--）
+    # 组内再按“近10日非0趋势日期数”降序排序
     if not pivot_df.empty:
         latest_row = pivot_df.iloc[0]
 
@@ -262,12 +263,29 @@ def save_trend_strength_pivot_csv(all_trend_data, output_dir=None, incremental=T
                 return 'neg'
             return 'zero'
 
+        # 计算每个品种在最近10个日期内“非0趋势”的天数
+        window = min(10, len(pivot_df))
+        recent_df = pivot_df.iloc[:window].copy()
+        # 将'--'等非数字置为空后转为数值
+        recent_num = recent_df.replace('--', pd.NA)
+        recent_num = recent_num.apply(pd.to_numeric, errors='coerce')
+        nonzero_counts = (recent_num.notna() & (recent_num != 0)).sum(axis=0).to_dict()
+
         groups = {'pos': [], 'neg': [], 'zero': [], 'missing': []}
         for col in pivot_df.columns:
             grp = classify_value(latest_row.get(col, '--'))
             groups[grp].append(col)
 
-        ordered_cols = groups['pos'] + groups['neg'] + groups['zero'] + groups['missing']
+        # 组内排序：按近10日非0趋势日期数降序；并以列名升序作稳定兜底
+        def sort_group(cols):
+            return sorted(cols, key=lambda c: (-nonzero_counts.get(c, 0), str(c)))
+
+        ordered_cols = (
+            sort_group(groups['pos'])
+            + sort_group(groups['neg'])
+            + sort_group(groups['zero'])
+            + sort_group(groups['missing'])
+        )
         # 仅在列集一致时重排，避免潜在缺失
         if set(ordered_cols) == set(pivot_df.columns):
             pivot_df = pivot_df[ordered_cols]
